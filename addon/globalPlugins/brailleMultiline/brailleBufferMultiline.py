@@ -1,6 +1,13 @@
+# coding: utf-8
+# brailleBufferMultiline
+# Part of brailleMultiline addon for NVDA 
+# Travis Roth, travis@travisroth.com
 
 import ui
+import speech
 import braille
+import wx 
+#import os 
 import types
 from collections.abc import Iterable
 import typing
@@ -27,6 +34,7 @@ from logHandler import log
 import controlTypes
 import api
 import textInfos
+import keyboardHandler
 import baseObject 
 import math
 
@@ -53,6 +61,7 @@ class BrailleBufferSegment(braille.BrailleBuffer):
 		"""
 		super().__init__(handler)
 		self.segmentSize = segmentSize
+		self.isFocusBuffer = False 
 
 	def append(self, regions):
 		self.regions.append(regions) 
@@ -184,9 +193,9 @@ class FakeRegionsList(object):
 		if region is None: return 
 		if isinstance(region, Iterable):
 			for r in region:
-				self.multibuffer.bufferSegments[getattr(r, "targetSegment", -1)].append(r)
+				self.multibuffer.bufferSegments[getattr(r, "targetSegment", self.multibuffer.focusBufferNumber)].append(r)
 		else:
-			self.multibuffer.bufferSegments[getattr(region, "targetSegment", -1)].append(region)
+			self.multibuffer.bufferSegments[getattr(region, "targetSegment", self.multibuffer.focusBufferNumber)].append(region)
 
 
 
@@ -222,7 +231,8 @@ class  BrailleBufferContainer(baseObject.AutoPropertyObject):
 			for i in self.segments:
 				self.bufferSegments.append(BrailleBufferSegment(handler, i))
 			self.numOfSegments = len(segments)
-		self._focusBufferNumber = self.focusBufferNumberDefault = -1 # where she should default NVDA focus braille be sent too #warning not fuly implemented
+		self._focusBufferNumber = self.focusBufferNumberDefault = -1 # where should default NVDA focus braille be sent too 
+		self.bufferSegments[self._focusBufferNumber].isFocusBuffer = True 
 		#hack: BrailleHandler likes to write to BrailleBuffer.regions[] directly which is not very OOO in message() and _doNewObject()
 		# make a pointer to our new append method so don't have monkey patch BrailleHandler._doNewObject, handlePendingCaretUpdate
 		self.regions = FakeRegionsList(self, self.bufferSegments[self.focusBufferNumber].regions)
@@ -241,11 +251,11 @@ class  BrailleBufferContainer(baseObject.AutoPropertyObject):
 		if region is None: return 
 		if isinstance(region, Iterable):
 			for r in region:
-				s = getattr(r, "targetSegment", -1)
+				s = getattr(r, "targetSegment", self.focusBufferNumber)
 				s = sef.focusBufferNumber  if s >= len(self.bufferSegments) else s #safety check if multiline output gets connected ot one buffer
 				self.bufferSegments[s].append(r)
 		else:
-				s = getattr(r, "targetSegment", -1)
+				s = getattr(r, "targetSegment", self.focusBufferNumber)
 				s = -1 if s >= len(self.bufferSegments) else s #safety check if multiline output gets connected ot one buffer
 				self.bufferSegments[s].append(r)
 
@@ -254,7 +264,9 @@ class  BrailleBufferContainer(baseObject.AutoPropertyObject):
 
 	def _set_focusBufferNumber(self, bufferNum):
 		if (bufferNum >=0 and bufferNum < self.numOfSegments) or bufferNum==-1:
+			self.bufferSegments[self._focusBufferNumber].isFocusBuffer = False 
 			self._focusBufferNumber = bufferNum
+			self.bufferSegments[self._focusBufferNumber].isFocusBuffer = True 
 		else:
 			raise LookupError("No such position to set focus buffer")
 
@@ -277,10 +289,10 @@ class  BrailleBufferContainer(baseObject.AutoPropertyObject):
 
 
 
-	def updateDisplay(self):
-		log.debug("BrailleBufferContainer.updateDisplay ")
-		if self is self.handler.buffer:
-			self.handler.update()
+#	def updateDisplay(self):
+#		log.debug("BrailleBufferContainer.updateDisplay ")
+#		if self is self.handler.buffer or self in self.handler.buffer.bufferSegments:
+#			self.handler.update()
 
 	def _get_windowRawText(self):
 		#since Braille display is treated as one buffer may be best to match _get_windowBrailleCells
@@ -381,24 +393,75 @@ class  BrailleBufferContainer(baseObject.AutoPropertyObject):
 		if segment is None: 
 			for b in self.bufferSegments: b.clear()
 		else:
-			segment = self.focusBufferNumber if segment == -1 else segment
+			trackingFocus = False 
+			if segment == -1: 
+				segment = self.focusBufferNumber 
+				trackingFocus = True 
+				self.regions = None 
 			self.bufferSegments[segment].clear() 
-		#brailleBuffer.clear() just initializes regions to a new list which breaks our 
-		self.regions = FakeRegionsList(self, self.bufferSegments[self.focusBufferNumber].regions)
+		#brailleBuffer.clear() just initializes regions to a new list which breaks our monkey path for the brailleHandler private variable accessing
+		if trackingFocus: 
+			self.bufferSegments[self.focusBufferNumber].isFocusBuffer = True #this should not reset but just  as well check
+			self.regions = FakeRegionsList(self, self.bufferSegments[self.focusBufferNumber].regions)
 
 # these are BrailleBuffer methods but base class doesn't know to look at multiple buffers so needs redirecting to be plug and play
 	#adding ability to access individual buffers but NVDA is focus driven so liekly mostly will work with focus buffer
 	# last buffer in bufferSegments has the last text written and is being used as default focus buffer
 
+	def _doCursorMoveNotFocused(self, region):
+		self.handler.mainBuffer.saveWindow()
+		region.update()
+		self.handler.mainBuffer.update()
+		self.handler.mainBuffer.restoreWindow()
+		self.handler.scrollToCursorOrSelection(region)
+		#if self.buffer is self.mainBuffer:
+		self.handler.update()
+
+
 	def scrollForward(self, segment=-1):
 		# redirect scroll command to a specific segment optional defaults to last buffer should be compatible with old API this way
+		focusTracking = True if (segment ==-1) or (segment == self.focusBufferNumber)  else False 
 		segment = segment if segment >=0 and segment < self.numOfSegments else self.focusBufferNumber 
-		return self.bufferSegments[segment].scrollForward()
+		if focusTracking: 
+			self.bufferSegments[segment].scrollForward() #let default handle it
+		if not focusTracking: 
+			#NVDA seems to not know cursor moved in not focused TextInfo
+			#so we must monitor and do it ourselves duplicating BrailleBuffer.scrollForward here
+			if not self.bufferSegments[segment]._nextWindow():
+				# The window could not be scrolled, so try moving to the next line.
+				if self.bufferSegments[segment].regions:
+					#save the focus when in same appapplication navigated textInfo focus likes to jump back 
+					savedFocus = api.getFocusObject() 
+					self.bufferSegments[segment].regions[-1].nextLine()
+					# NVDA does not realize cursor moved in non focused object
+					self.handler._doCursorMove(self.bufferSegments[segment].regions[-1])
+					#self._doCursorMoveNotFocused(self.bufferSegments[segment].regions[-1])
+					if savedFocus != api.getFocusObject(): savedFocus.setFocus()
+			else:
+				# Scrolling succeeded.
+				self.bufferSegments[segment].updateDisplay()
+		return 
 
 	def scrollBack(self, segment=-1):
 		# redirect scroll command to a specific segment optional defaults to last buffer should be compatible with old API this way
+		focusTracking = True if (segment ==-1) or (segment == self.focusBufferNumber)  else False 
 		segment = segment if segment >=0 and segment < self.numOfSegments else self.focusBufferNumber 
-		return self.bufferSegments[segment].scrollBack()
+		if focusTracking:  
+			self.bufferSegments[segment].scrollBack() # let default
+		if not focusTracking: 
+			if not self.bufferSegments[segment]._previousWindow():
+				# The window could not be scrolled, so try moving to the previous line.
+				if self.bufferSegments[segment].regions:
+					#try to keep focus from jumping
+					savedFocus = api.getFocusObject() 
+					self.bufferSegments[segment].regions[-1].previousLine()
+					self.handler._doCursorMove(self.bufferSegments[segment].regions[-1])
+					#self._doCursorMoveNotFocused(self.bufferSegments[segment].regions[-1])
+					if savedFocus != api.getFocusObject(): savedFocus.setFocus() 
+			else:
+				# Scrolling succeeded.
+				self.bufferSegments[segment].updateDisplay()
+		return 
 
 	
 	def focus(self, region, segment=-1):
@@ -511,7 +574,7 @@ class  BrailleBufferContainer(baseObject.AutoPropertyObject):
 def _doNewObjectMultiBuffer(self, regionIterator):
 	#BrailleHandler._doNewObject does not know that the list of regions can now cover mutliple buffers and therefore objects with ancestors 
 	# to keep focusToHardLeft working sort the regions into buffer specific lists first
-	buffers = self.mainBuffer.numOfSegments
+	buffers = self.mainBuffer.numOfSegments if hasattr(self.mainBuffer, "numOfSegments") else 1
 	#log.debug("doNewObjectMultiBuffer has numOfSegments " + str(buffers))
 	if buffers > 1:
 		#sort
@@ -524,7 +587,9 @@ def _doNewObjectMultiBuffer(self, regionIterator):
 					if r.targetSegment == x:  targeted.append(r) 
 				#end inner for
 			log.debug("not default buffer "+ str(x) +" doNewObject with non targeted segments " + str(len(targeted)))
-			if len(targeted) > 0: _original_doNewObject(self, targeted) 
+			if len(targeted) > 0: 
+				braille.handler.mainBuffer.clear(x) 
+				_doNewObjectOriginalWithoutClear(self, targeted) 
 		# default regions made by NVDA don't have targetSegment do them last
 		targeted = []
 		for r in regions:
@@ -533,18 +598,20 @@ def _doNewObjectMultiBuffer(self, regionIterator):
 			#end for
 		log.debug("final doNewObject with non targeted segments " + str(len(targeted)))
 		if len(targeted) > 0: 
-			braille.handler.mainBuffer.clear(x) #todo: original _doNewObject calls clear which clears focus buffer every time probably need rewrite it
-			_original_doNewObject(self, targeted)
+			braille.handler.mainBuffer.clear() #Focus buffer default
+			_doNewObjectOriginalWithoutClear(self, targeted)
 
 	else:
 		#do original
 		#log.debug("DoNewObjectMulti calling default")
-		_original_doNewObject(self, regionIterator) 
+		braille.handler.mainBuffer.clear() #Focus buffer default
+		_doNewObjectOriginalWithoutClear(self, regionIterator) 
 
 
-#braille.BrailleHandler copied here for reference so far
-def _doNewObjectOriginal(self, regions):
-	self.mainBuffer.clear()
+#braille.BrailleHandler copied here for reference 
+# removing clear need handle more specifically in _doNewObjectMultiBuffer
+def _doNewObjectOriginalWithoutClear(self, regions):
+	#self.mainBuffer.clear()
 	focusToHardLeftSet = False
 	for region in regions:
 		if (
@@ -571,6 +638,17 @@ def _doNewObjectOriginal(self, regions):
 	elif self.buffer is self.messageBuffer and keyboardHandler.keyCounter>self._keyCountForLastMessage:
 		self._dismissMessage()
 
+#braille.BrailleHandler
+def _get_shouldAutoTetherMonkey(self) -> bool:
+	#when buffer not in focus tethering could be a problem
+	isFocus = False 
+	if hasattr(self, "isFocusBuffer"):
+		isFocus = self.isFocusBuffer 
+	return isFocus and self.enabled and config.conf["braille"]["tetherTo"] == TetherTo.AUTO.value
+braille.BrailleHandler._get_shouldAutoTether = _get_shouldAutoTetherMonkey
+
+
+#monkey for debugging
 def monkey_handleCaretMove(
 	self,
 	obj: "NVDAObject",
@@ -615,8 +693,25 @@ def monkey_doCursorMove(self, region):
 		self._dismissMessage()
 	log.debug("do_cursor_move in region %s" % region.rawText)
 
+def scrollForwardMonkey(self):
+	if not self._nextWindow():
+		# The window could not be scrolled, so try moving to the next line.
+		if self.regions:
+			self.regions[-1].nextLine()
+			#wx.Yield() 
+			#self.updateDisplay() 
+			speech.speakMessage("region scrolling ")
+			speech.speakMessage(self.regions[-1].rawText)
+			#speech.speakMessage(str(self.role))
+			#speech.speakMessage(self.regions[-1].rawText)
+	else:
+		# Scrolling succeeded.
+		self.updateDisplay()
+
+
 
 # monkey patches
+#braille.BrailleBuffer.scrollForward = scrollForwardMonkey
 #braille.BrailleHandler.handleCaretMove = monkey_handleCaretMove
 #braille.BrailleHandler.handlePendingCaretUpdate = monkey_handlePendingCaretUpdate
 #braille.BrailleHandler._doCursorMove = monkey_doCursorMove

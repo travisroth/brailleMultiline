@@ -1,14 +1,21 @@
+# coding: utf-8
+# brailleBufferMultiline
+# addon for NVDA 
+# Travis Roth, travis@travisroth.com
 
+import api 
 import globalPluginHandler
 import addonHandler
 import config 
 from scriptHandler import script 
 import braille
+import ui 
 from . import brailleBufferMultiline
+from . import objectMonitor 
 
 import wx
 import gui
-from logging import log
+from logHandler import log
 
 #addonHandler.initTranslation() 
 
@@ -58,11 +65,15 @@ class OptionsPanel(gui.SettingsPanel):
 class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	scriptCategory = "BrailleMultiline"
 
+	objToMonitor = {}
+
 	def __init__(self):
 		super().__init__()
 		gui.settingsDialogs.NVDASettingsDialog.categoryClasses.append(OptionsPanel)
 		self.newBrailleBuffer(bmSettings["numberOfLines_%s" % curBD])
 		braille.handler.mainBuffer.focusBufferNumber = bmSettings["focusLine%s" % curBD]
+		# ObjectMonitor initiate
+		#self.objToMonitor = {}
 
 	def terminate(self):
 		super(GlobalPlugin, self).terminate()
@@ -103,7 +114,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	#scrolling the non focus buffer lines requires calling scroll on the buffer as have not monkey patched braille.handler scroll
 	@script(
 		# Translators: Input help mode message for a braille command.
-		description=_("Scrolls the braille display back"),
+		description=_("Scrolls the braille display back in first buffer"),
 		#category=SCRCAT_BRAILLE,
 		bypassInputHelp=True
 	)
@@ -112,7 +123,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
 	@script(
 		# Translators: Input help mode message for a braille command.
-		description=_("Scrolls the braille display forward"),
+		description=_("Scrolls the braille display forward in first buffer"),
 		#category=SCRCAT_BRAILLE,
 		bypassInputHelp=True
 	)
@@ -121,7 +132,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
 	@script(
 		# Translators: Input help mode message for a braille command.
-		description=_("Scrolls the braille display back"),
+		description=_("Scrolls the braille display back in second buffer"),
 		#category=SCRCAT_BRAILLE,
 		bypassInputHelp=True
 	)
@@ -130,7 +141,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
 	@script(
 		# Translators: Input help mode message for a braille command.
-		description=_("Scrolls the braille display forward"),
+		description=_("Scrolls the braille display forward in second buffer"),
 		#category=SCRCAT_BRAILLE,
 		bypassInputHelp=True
 	)
@@ -139,7 +150,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
 	@script(
 		# Translators: Input help mode message for a braille command.
-		description=_("Scrolls the braille display back"),
+		description=_("Scrolls the braille display back in buffer three"),
 		#category=SCRCAT_BRAILLE,
 		bypassInputHelp=True
 	)
@@ -148,7 +159,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
 	@script(
 		# Translators: Input help mode message for a braille command.
-		description=_("Scrolls the braille display forward"),
+		description=_("Scrolls the braille display forward in buffer three"),
 		#category=SCRCAT_BRAILLE,
 		bypassInputHelp=True
 	)
@@ -157,7 +168,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
 	@script(
 		# Translators: Input help mode message for a braille command.
-		description=_("Scrolls the braille display back"),
+		description=_("Scrolls the braille display back in buffer four"),
 		#category=SCRCAT_BRAILLE,
 		bypassInputHelp=True
 	)
@@ -166,7 +177,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
 	@script(
 		# Translators: Input help mode message for a braille command.
-		description=_("Scrolls the braille display forward"),
+		description=_("Scrolls the braille display forward in buffer four"),
 		#category=SCRCAT_BRAILLE,
 		bypassInputHelp=True
 	)
@@ -179,6 +190,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	def script_oldBrailleBuffer(self, gesture):
 		braille.handler.mainBuffer = brailleBufferMultiline.oldMainBuffer
 		braille.handler.buffer = braille.handler.mainBuffer
+		#braille.BrailleHandler._doNewObject = brailleBufferMultiline._original_doNewObject 
 
 	@script(gesture="kb:NVDA+shift+y")
 	def script_newBrailleBuffer(self, gesture):
@@ -186,3 +198,31 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		#brailleBufferMultiline.oldMainBuffer = braille.handler.mainBuffer
 		braille.handler.mainBuffer = brailleBufferMultiline.BrailleBufferContainer(braille.handler, 1) 
 		braille.handler.buffer = braille.handler.mainBuffer
+
+	#Objet Monitor
+	@script(gesture="kb:NVDA+control+1",
+	 # Translators: input help description for script
+		description=_("Set line 1 to monitor navigator object") )
+	def script_setObjectMonitorOnOne(self, gesture):
+		#nav = api.getNavigatorObject()
+		#self.objToMonitor[1] = objectMonitor.ObjectMonitor(nav, 1)
+		#focus = api.getFocusObject()
+		focus = api.getNavigatorObject()
+		GlobalPlugin.objToMonitor[1] = objectMonitor.ObjectMonitor(focus, 1)
+		ui.message(_("Monitor focus object in first buffer"))
+
+	@script(gesture="kb:NVDA+control+shift+1",
+		# Translators: input help description of script to clearn monitored object
+		description=_("Stop monitoring in line 1") )
+	def script_clearObjectMonitorOnOne(self, gesture):
+		braille.handler.mainBuffer.bufferSegments[1].clear() 
+		GlobalPlugin.objToMonitor[1] = None 
+		ui.message(_("Stop monitoring in buffer one"))
+
+	@script(gesture="kb:NVDA+control+=")
+	def script_testObjectOne(self, gesture):
+		obj = self.objToMonitor[1]._obj
+		s = ""
+		s += obj.name + " "
+		s += str(obj.role)
+		ui.message(s)
