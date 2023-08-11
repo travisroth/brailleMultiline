@@ -26,7 +26,7 @@ import controlTypes
 import api
 import textInfos
 from NVDAObjects import NVDAObject
-import copy 
+#import copy 
 
 class ObjectMonitor():
 	def __init__(self, obj: NVDAObject, bufferNum: int) -> None:
